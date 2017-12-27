@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2003 Bilibili
  * Copyright (c) 2003 Fabrice Bellard
  * Copyright (c) 2013-2015 Zhang Rui <bbcallen@gmail.com>
  *
@@ -58,6 +59,8 @@
 #endif
 
 #include <stdbool.h>
+#include "ijkavformat/ijkiomanager.h"
+#include "ijkavformat/ijkioapplication.h"
 #include "ff_ffinc.h"
 #include "ff_ffmsg_queue.h"
 #include "ff_ffpipenode.h"
@@ -76,13 +79,16 @@
 
 #define BUFFERING_CHECK_PER_BYTES               (512)
 #define BUFFERING_CHECK_PER_MILLISECONDS        (500)
+#define FAST_BUFFERING_CHECK_PER_MILLISECONDS   (50)
+#define MAX_RETRY_CONVERT_IMAGE                 (3)
 
 #define MAX_QUEUE_SIZE (15 * 1024 * 1024)
+#define MAX_ACCURATE_SEEK_TIMEOUT (5000)
 #ifdef FFP_MERGE
 #define MIN_FRAMES 25
 #endif
 #define DEFAULT_MIN_FRAMES  50000
-#define MIN_MIN_FRAMES      5
+#define MIN_MIN_FRAMES      2
 #define MAX_MIN_FRAMES      50000
 #define MIN_FRAMES (ffp->dcc.min_frames)
 #define EXTERNAL_CLOCK_MIN_FRAMES 2
@@ -132,6 +138,24 @@
 
 static unsigned sws_flags = SWS_BICUBIC;
 #endif
+
+#define HD_IMAGE 2  // 640*360
+#define SD_IMAGE 1  // 320*180
+#define LD_IMAGE 0  // 160*90
+#define MAX_DEVIATION 1200000   // 1200ms
+
+typedef struct GetImgInfo {
+    char *img_path;
+    int64_t start_time;
+    int64_t end_time;
+    int64_t frame_interval;
+    int num;
+    int count;
+    int width;
+    int height;
+    AVCodecContext *frame_img_codec_ctx;
+    struct SwsContext *frame_img_convert_ctx;
+} GetImgInfo;
 
 typedef struct MyAVPacketList {
     AVPacket pkt;
@@ -282,7 +306,7 @@ typedef struct VideoState {
     int audio_stream;
 
     int av_sync_type;
-
+    void *handle;
     double audio_clock;
     int audio_clock_serial;
     double audio_diff_cum; /* used for AV difference average computation */
@@ -294,8 +318,10 @@ typedef struct VideoState {
     int audio_hw_buf_size;
     uint8_t *audio_buf;
     uint8_t *audio_buf1;
+    short *audio_new_buf;  /* for soundtouch buf */
     unsigned int audio_buf_size; /* in bytes */
     unsigned int audio_buf1_size;
+    unsigned int audio_new_buf_size;
     int audio_buf_index; /* in bytes */
     int audio_write_buf_size;
     int audio_volume;
@@ -378,6 +404,16 @@ typedef struct VideoState {
 
     volatile int latest_seek_load_serial;
     volatile int64_t latest_seek_load_start_at;
+
+    int drop_aframe_count;
+    int drop_vframe_count;
+    int64_t accurate_seek_start_time;
+    volatile int64_t accurate_seek_vframe_pts;
+    int audio_accurate_seek_req;
+    int video_accurate_seek_req;
+    SDL_mutex *accurate_seek_mutex;
+    SDL_cond  *video_accurate_seek_cond;
+    SDL_cond  *audio_accurate_seek_cond;
 } VideoState;
 
 /* options specified by the user */
@@ -466,6 +502,15 @@ typedef struct FFStatistic
     int64_t buf_capacity;
     SDL_SpeedSampler2 tcp_read_sampler;
     int64_t latest_seek_load_duration;
+    int64_t byte_count;
+    int64_t cache_physical_pos;
+    int64_t cache_file_forwards;
+    int64_t cache_file_pos;
+    int64_t cache_count_bytes;
+    int64_t logical_file_size;
+    int drop_frame_count;
+    int decode_frame_count;
+    float drop_frame_rate;
 } FFStatistic;
 
 #define FFP_TCP_READ_SAMPLE_RANGE 2000
@@ -612,6 +657,7 @@ typedef struct FFPlayer {
     int packet_buffering;
     int pictq_size;
     int max_fps;
+    int startup_volume;
 
     int videotoolbox;
     int vtb_max_frame_width;
@@ -628,6 +674,7 @@ typedef struct FFPlayer {
     int mediacodec_auto_rotate;
 
     int opensles;
+    int soundtouch_enable;
 
     char *iformat_name;
 
@@ -650,10 +697,19 @@ typedef struct FFPlayer {
     int         pf_playback_volume_changed;
 
     void               *inject_opaque;
+    void               *ijkio_inject_opaque;
     FFStatistic         stat;
     FFDemuxCacheControl dcc;
 
     AVApplicationContext *app_ctx;
+    IjkIOManagerContext *ijkio_manager_ctx;
+
+    int enable_accurate_seek;
+    int accurate_seek_timeout;
+    int mediacodec_sync;
+    int skip_calc_frame_rate;
+    int get_frame_mode;
+    GetImgInfo *get_img_info;
 } FFPlayer;
 
 #define fftime_to_milliseconds(ts) (av_rescale(ts, 1000, AV_TIME_BASE))
@@ -730,6 +786,8 @@ inline static void ffp_reset_internal(FFPlayer *ffp)
     ffp->start_on_prepared      = 1;
     ffp->first_video_frame_rendered = 0;
     ffp->sync_av_start          = 1;
+    ffp->enable_accurate_seek   = 0;
+    ffp->accurate_seek_timeout  = MAX_ACCURATE_SEEK_TIMEOUT;
 
     ffp->playable_duration_ms           = 0;
 
@@ -751,6 +809,7 @@ inline static void ffp_reset_internal(FFPlayer *ffp)
     ffp->mediacodec_auto_rotate         = 0; // option
 
     ffp->opensles                       = 0; // option
+    ffp->soundtouch_enable              = 0; // option
 
     ffp->iformat_name                   = NULL; // option
 
@@ -770,10 +829,12 @@ inline static void ffp_reset_internal(FFPlayer *ffp)
     ffp->pf_playback_volume_changed     = 0;
 
     av_application_closep(&ffp->app_ctx);
+    ijkio_manager_destroyp(&ffp->ijkio_manager_ctx);
 
     msg_queue_flush(&ffp->msg_queue);
 
     ffp->inject_opaque = NULL;
+    ffp->ijkio_inject_opaque = NULL;
     ffp_reset_statistic(&ffp->stat);
     ffp_reset_demux_cache_control(&ffp->dcc);
 }

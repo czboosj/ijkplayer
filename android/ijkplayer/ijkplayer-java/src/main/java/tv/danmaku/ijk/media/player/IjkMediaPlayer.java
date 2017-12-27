@@ -1,4 +1,5 @@
 /*
+ * Copyright (C) 2006 Bilibili
  * Copyright (C) 2006 The Android Open Source Project
  * Copyright (C) 2013 Zhang Rui <bbcallen@gmail.com>
  *
@@ -53,6 +54,7 @@ import java.util.Map;
 
 import tv.danmaku.ijk.media.player.annotations.AccessedByNative;
 import tv.danmaku.ijk.media.player.annotations.CalledByNative;
+import tv.danmaku.ijk.media.player.misc.IAndroidIO;
 import tv.danmaku.ijk.media.player.misc.IMediaDataSource;
 import tv.danmaku.ijk.media.player.misc.ITrackInfo;
 import tv.danmaku.ijk.media.player.misc.IjkTrackInfo;
@@ -60,7 +62,7 @@ import tv.danmaku.ijk.media.player.pragma.DebugLog;
 
 /**
  * @author bbcallen
- * 
+ *
  *         Java wrapper of ffplay.
  */
 public final class IjkMediaPlayer extends AbstractMediaPlayer {
@@ -106,6 +108,7 @@ public final class IjkMediaPlayer extends AbstractMediaPlayer {
     public static final int PROP_FLOAT_VIDEO_DECODE_FRAMES_PER_SECOND       = 10001;
     public static final int PROP_FLOAT_VIDEO_OUTPUT_FRAMES_PER_SECOND       = 10002;
     public static final int FFP_PROP_FLOAT_PLAYBACK_RATE                    = 10003;
+    public static final int FFP_PROP_FLOAT_DROP_FRAME_RATE                  = 10007;
 
     public static final int FFP_PROP_INT64_SELECTED_VIDEO_STREAM            = 20001;
     public static final int FFP_PROP_INT64_SELECTED_AUDIO_STREAM            = 20002;
@@ -126,15 +129,25 @@ public final class IjkMediaPlayer extends AbstractMediaPlayer {
     public static final int FFP_PROP_INT64_ASYNC_STATISTIC_BUF_BACKWARDS    = 20201;
     public static final int FFP_PROP_INT64_ASYNC_STATISTIC_BUF_FORWARDS     = 20202;
     public static final int FFP_PROP_INT64_ASYNC_STATISTIC_BUF_CAPACITY     = 20203;
+    public static final int FFP_PROP_INT64_TRAFFIC_STATISTIC_BYTE_COUNT     = 20204;
+    public static final int FFP_PROP_INT64_CACHE_STATISTIC_PHYSICAL_POS     = 20205;
+    public static final int FFP_PROP_INT64_CACHE_STATISTIC_FILE_FORWARDS    = 20206;
+    public static final int FFP_PROP_INT64_CACHE_STATISTIC_FILE_POS         = 20207;
+    public static final int FFP_PROP_INT64_CACHE_STATISTIC_COUNT_BYTES      = 20208;
+    public static final int FFP_PROP_INT64_LOGICAL_FILE_SIZE                = 20209;
+    public static final int FFP_PROP_INT64_SHARE_CACHE_DATA                 = 20210;
     public static final int FFP_PROP_INT64_BIT_RATE                         = 20100;
     public static final int FFP_PROP_INT64_TCP_SPEED                        = 20200;
-    public static final int FFP_PROP_INT64_LATEST_SEEK_LOAD_DURATION               = 20300;
+    public static final int FFP_PROP_INT64_LATEST_SEEK_LOAD_DURATION        = 20300;
     //----------------------------------------
 
     @AccessedByNative
     private long mNativeMediaPlayer;
     @AccessedByNative
     private long mNativeMediaDataSource;
+
+    @AccessedByNative
+    private long mNativeAndroidIO;
 
     @AccessedByNative
     private int mNativeSurfaceTexture;
@@ -233,6 +246,9 @@ public final class IjkMediaPlayer extends AbstractMediaPlayer {
         native_setup(new WeakReference<IjkMediaPlayer>(this));
     }
 
+    private native void _setFrameAtTime(String imgCachePath, long startTime, long endTime, int num, int imgDefinition)
+            throws IllegalArgumentException, IllegalStateException;
+
     /*
      * Update the IjkMediaPlayer SurfaceTexture. Call after setting a new
      * display surface.
@@ -242,13 +258,13 @@ public final class IjkMediaPlayer extends AbstractMediaPlayer {
     /**
      * Sets the {@link SurfaceHolder} to use for displaying the video portion of
      * the media.
-     * 
+     *
      * Either a surface holder or surface must be set if a display or video sink
      * is needed. Not calling this method or {@link #setSurface(Surface)} when
      * playing back a video will result in only the audio track being played. A
      * null surface holder or surface will result in only the audio track being
      * played.
-     * 
+     *
      * @param sh
      *            the SurfaceHolder to use for video display
      */
@@ -271,7 +287,7 @@ public final class IjkMediaPlayer extends AbstractMediaPlayer {
      * does not support {@link #setScreenOnWhilePlaying(boolean)}. Setting a
      * Surface will un-set any Surface or SurfaceHolder that was previously set.
      * A null surface will result in only the audio track being played.
-     * 
+     *
      * If the Surface sends frames to a {@link SurfaceTexture}, the timestamps
      * returned from {@link SurfaceTexture#getTimestamp()} will have an
      * unspecified zero point. These timestamps cannot be directly compared
@@ -279,7 +295,7 @@ public final class IjkMediaPlayer extends AbstractMediaPlayer {
      * source, or multiple runs of the same program. The timestamp is normally
      * monotonically increasing and is unaffected by time-of-day adjustments,
      * but it is reset when the position is set.
-     * 
+     *
      * @param surface
      *            The {@link Surface} to be used for the video portion of the
      *            media.
@@ -369,13 +385,13 @@ public final class IjkMediaPlayer extends AbstractMediaPlayer {
 
     /**
      * Sets the data source (file-path or http/rtsp URL) to use.
-     * 
+     *
      * @param path
      *            the path of the file, or the http/rtsp URL of the stream you
      *            want to play
      * @throws IllegalStateException
      *             if it is called in an invalid state
-     * 
+     *
      *             <p>
      *             When <code>path</code> refers to a local file, the file may
      *             actually be opened by a process other than the calling
@@ -471,6 +487,11 @@ public final class IjkMediaPlayer extends AbstractMediaPlayer {
         _setDataSource(mediaDataSource);
     }
 
+    public void setAndroidIOCallback(IAndroidIO androidIO)
+            throws IllegalArgumentException, SecurityException, IllegalStateException {
+        _setAndroidIOCallback(androidIO);
+    }
+
     private native void _setDataSource(String path, String[] keys, String[] values)
             throws IOException, IllegalArgumentException, SecurityException, IllegalStateException;
 
@@ -478,6 +499,9 @@ public final class IjkMediaPlayer extends AbstractMediaPlayer {
             throws IOException, IllegalArgumentException, SecurityException, IllegalStateException;
 
     private native void _setDataSource(IMediaDataSource mediaDataSource)
+            throws IllegalArgumentException, SecurityException, IllegalStateException;
+
+    private native void _setAndroidIOCallback(IAndroidIO androidIO)
             throws IllegalArgumentException, SecurityException, IllegalStateException;
 
     @Override
@@ -777,6 +801,30 @@ public final class IjkMediaPlayer extends AbstractMediaPlayer {
         return _getPropertyLong(FFP_PROP_INT64_ASYNC_STATISTIC_BUF_CAPACITY, 0);
     }
 
+    public long getTrafficStatisticByteCount() {
+        return _getPropertyLong(FFP_PROP_INT64_TRAFFIC_STATISTIC_BYTE_COUNT, 0);
+    }
+
+    public long getCacheStatisticPhysicalPos() {
+        return _getPropertyLong(FFP_PROP_INT64_CACHE_STATISTIC_PHYSICAL_POS, 0);
+    }
+
+    public long getCacheStatisticFileForwards() {
+        return _getPropertyLong(FFP_PROP_INT64_CACHE_STATISTIC_FILE_FORWARDS, 0);
+    }
+
+    public long getCacheStatisticFilePos() {
+        return _getPropertyLong(FFP_PROP_INT64_CACHE_STATISTIC_FILE_POS, 0);
+    }
+
+    public long getCacheStatisticCountBytes() {
+        return _getPropertyLong(FFP_PROP_INT64_CACHE_STATISTIC_COUNT_BYTES, 0);
+    }
+
+    public long getFileSize() {
+        return _getPropertyLong(FFP_PROP_INT64_LOGICAL_FILE_SIZE, 0);
+    }
+
     public long getBitRate() {
         return _getPropertyLong(FFP_PROP_INT64_BIT_RATE, 0);
     }
@@ -793,6 +841,10 @@ public final class IjkMediaPlayer extends AbstractMediaPlayer {
     private native void  _setPropertyFloat(int property, float value);
     private native long  _getPropertyLong(int property, long defaultValue);
     private native void  _setPropertyLong(int property, long value);
+
+    public float getDropFrameRate() {
+        return _getPropertyFloat(FFP_PROP_FLOAT_DROP_FRAME_RATE, .0f);
+    }
 
     @Override
     public native void setVolume(float leftVolume, float rightVolume);
@@ -895,6 +947,10 @@ public final class IjkMediaPlayer extends AbstractMediaPlayer {
     protected void finalize() throws Throwable {
         super.finalize();
         native_finalize();
+    }
+
+    public void setCacheShare(int share) {
+        _setPropertyLong(FFP_PROP_INT64_SHARE_CACHE_DATA, (long)share);
     }
 
     private static class EventHandler extends Handler {

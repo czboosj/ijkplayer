@@ -1,6 +1,7 @@
 /*
  * ff_ffplaye_options.h
  *
+ * Copyright (c) 2015 Bilibili
  * Copyright (c) 2015 Zhang Rui <bbcallen@gmail.com>
  *
  * This file is part of ijkPlayer.
@@ -67,6 +68,8 @@ static const AVOption ffp_context_options[] = {
     // TODO: ss
     { "nodisp",                         "disable graphical display",
         OPTION_OFFSET(display_disable), OPTION_INT(0, 0, 1) },
+    { "volume",                         "set startup volume 0=min 100=max",
+        OPTION_OFFSET(startup_volume),   OPTION_INT(100, 0, 100) },
     // FFP_MERGE: f, pix_fmt, stats
     { "fast",                           "non spec compliant optimizations",
         OPTION_OFFSET(fast),            OPTION_INT(0, 0, 1) },
@@ -146,6 +149,15 @@ static const AVOption ffp_context_options[] = {
     { "preset-5-1-center-mix-level",        "preset center-mix-level for 5.1 channel",
         OPTION_OFFSET(preset_5_1_center_mix_level), OPTION_DOUBLE(M_SQRT1_2, -32, 32) },
 
+    { "enable-accurate-seek",                      "enable accurate seek",
+        OPTION_OFFSET(enable_accurate_seek),       OPTION_INT(0, 0, 1) },
+    { "accurate-seek-timeout",                      "accurate seek timeout",
+        OPTION_OFFSET(accurate_seek_timeout),       OPTION_INT(MAX_ACCURATE_SEEK_TIMEOUT, 0, MAX_ACCURATE_SEEK_TIMEOUT) },
+    { "skip-calc-frame-rate",                      "don't calculate real frame rate",
+        OPTION_OFFSET(skip_calc_frame_rate),       OPTION_INT(0, 0, 1) },
+    { "get-frame-mode",                      "warning, this option only for get frame",
+        OPTION_OFFSET(get_frame_mode),       OPTION_INT(0, 0, 1) },
+
         // iOS only options
     { "videotoolbox",                       "VideoToolbox: enable",
         OPTION_OFFSET(videotoolbox),        OPTION_INT(0, 0, 1) },
@@ -177,7 +189,11 @@ static const AVOption ffp_context_options[] = {
         OPTION_OFFSET(mediacodec_handle_resolution_change),     OPTION_INT(0, 0, 1) },
     { "opensles",                           "OpenSL ES: enable",
         OPTION_OFFSET(opensles),            OPTION_INT(0, 0, 1) },
-    
+    { "soundtouch",                           "SoundTouch: enable",
+        OPTION_OFFSET(soundtouch_enable),            OPTION_INT(0, 0, 1) },
+    { "mediacodec-sync",                 "mediacodec: use msg_queue for synchronise",
+        OPTION_OFFSET(mediacodec_sync),           OPTION_INT(0, 0, 1) },
+
     { NULL }
 };
 
